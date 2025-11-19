@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CT Simulator - Scanner & End Device</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+        
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        canvas {
+            border: 2px solid #0f3460;
+            box-shadow: 0 0 30px rgba(0, 150, 255, 0.3);
+        }
+        
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 100;
+            border: 1px solid #0f3460;
+        }
+        
+        #info h1 {
+            margin: 0 0 15px 0;
+            font-size: 24px;
+            color: #00d4ff;
+        }
+        
+        #info p {
+            margin: 8px 0;
+            line-height: 1.6;
+        }
+        
+        .label {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h1>🏥 CT Simulator</h1>
+        <p><span class="label">🔄 Controls:</span> Drag to rotate</p>
+        <p><span class="label">🔍 Zoom:</span> Scroll wheel</p>
+        <p><span class="label">⚪ Scanner:</span> Ring structure</p>
+        <p><span class="label">📋 End Device:</span> Patient bed</p>
+    </div>
+    
+    <div id="canvas-container">
+        <canvas id="canvas" width="1200" height="800"></canvas>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // 3D transformation parameters
+        let rotationY = 0.3;
+        let rotationX = 0.2;
+        let zoom = 1.0;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        
+        // Simple 3D to 2D projection
+        function project3D(x, y, z) {
+            const scale = 200 * zoom;
+            const perspective = 800;
+            
+            // Apply rotation
+            const cosY = Math.cos(rotationY);
+            const sinY = Math.sin(rotationY);
+            const cosX = Math.cos(rotationX);
+            const sinX = Math.sin(rotationX);
+            
+            // Rotate around Y axis
+            let x1 = x * cosY - z * sinY;
+            let z1 = x * sinY + z * cosY;
+            let y1 = y;
+            
+            // Rotate around X axis
+            let y2 = y1 * cosX - z1 * sinX;
+            let z2 = y1 * sinX + z1 * cosX;
+            let x2 = x1;
+            
+            // Perspective projection
+            const factor = perspective / (perspective + z2);
+            const projX = canvas.width / 2 + x2 * scale * factor;
+            const projY = canvas.height / 2 - y2 * scale * factor;
+            
+            return { x: projX, y: projY, z: z2, scale: factor };
+        }
+        
+        // Draw a circle in 3D space
+        function drawCircle3D(centerX, centerY, centerZ, radius, segments, color, thickness = 2) {
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const angle = (i / segments) * Math.PI * 2;
+                const x = centerX + Math.cos(angle) * radius;
+                const y = centerY + Math.sin(angle) * radius;
+                const z = centerZ;
+                points.push(project3D(x, y, z));
+            }
+            
+            ctx.strokeStyle = color;
+            ctx.lineWidth = thickness;
+            ctx.beginPath();
+            
+            for (let i = 0; i < points.length; i++) {
+                if (i === 0) {
+                    ctx.moveTo(points[i].x, points[i].y);
+                } else {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+            }
+            
+            ctx.stroke();
+        }
+        
+        // Draw a box in 3D space
+        function drawBox3D(x, y, z, width, height, depth, color) {
+            const hw = width / 2;
+            const hh = height / 2;
+            const hd = depth / 2;
+            
+            // Define 8 vertices of the box
+            const vertices = [
+                project3D(x - hw, y - hh, z - hd),
+                project3D(x + hw, y - hh, z - hd),
+                project3D(x + hw, y + hh, z - hd),
+                project3D(x - hw, y + hh, z - hd),
+                project3D(x - hw, y - hh, z + hd),
+                project3D(x + hw, y - hh, z + hd),
+                project3D(x + hw, y + hh, z + hd),
+                project3D(x - hw, y + hh, z + hd)
+            ];
+            
+            // Define faces (order matters for depth sorting)
+            const faces = [
+                [0, 1, 2, 3], // front
+                [1, 5, 6, 2], // right
+                [5, 4, 7, 6], // back
+                [4, 0, 3, 7], // left
+                [3, 2, 6, 7], // top
+                [4, 5, 1, 0]  // bottom
+            ];
+            
+            // Calculate average Z for each face (for depth sorting)
+            const facesWithDepth = faces.map((face, idx) => {
+                const avgZ = face.reduce((sum, vIdx) => sum + vertices[vIdx].z, 0) / face.length;
+                return { face, avgZ, idx };
+            });
+            
+            // Sort faces by depth (back to front)
+            facesWithDepth.sort((a, b) => a.avgZ - b.avgZ);
+            
+            // Draw faces
+            facesWithDepth.forEach(({ face, idx }) => {
+                ctx.fillStyle = color;
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 1;
+                
+                ctx.beginPath();
+                face.forEach((vIdx, i) => {
+                    if (i === 0) {
+                        ctx.moveTo(vertices[vIdx].x, vertices[vIdx].y);
+                    } else {
+                        ctx.lineTo(vertices[vIdx].x, vertices[vIdx].y);
+                    }
+                });
+                ctx.closePath();
+                
+                // Adjust brightness based on face orientation
+                const brightness = 0.6 + (idx / faces.length) * 0.4;
+                ctx.globalAlpha = brightness;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+                ctx.stroke();
+            });
+        }
+        
+        // Draw cylinder/torus approximation
+        function drawTorus3D(centerX, centerY, centerZ, majorRadius, minorRadius, segments, color) {
+            const rings = 12;
+            
+            for (let i = 0; i < rings; i++) {
+                const angle = (i / rings) * Math.PI * 2;
+                const ringX = centerX + Math.cos(angle) * majorRadius;
+                const ringY = centerY + Math.sin(angle) * majorRadius;
+                const ringZ = centerZ;
+                
+                // Draw a circle representing the cross-section
+                drawCircle3D(ringX, ringY, ringZ, minorRadius, 16, color, 3);
+            }
+            
+            // Draw the main circular path
+            drawCircle3D(centerX, centerY, centerZ, majorRadius, segments, color, 4);
+        }
+        
+        // Animation loop
+        function animate() {
+            // Clear canvas
+            ctx.fillStyle = '#0a0a15';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid floor
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 1;
+            for (let i = -5; i <= 5; i++) {
+                const p1 = project3D(i, -2, -5);
+                const p2 = project3D(i, -2, 5);
+                const p3 = project3D(-5, -2, i);
+                const p4 = project3D(5, -2, i);
+                
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(p3.x, p3.y);
+                ctx.lineTo(p4.x, p4.y);
+                ctx.stroke();
+            }
+            
+            // Draw CT Scanner (main structure)
+            // Scanner housing
+            drawBox3D(0, 0, 0, 0.5, 5, 5, '#e0e0e0');
+            
+            // Main scanner ring (torus)
+            drawTorus3D(0, 0, 0, 2, 0.3, 64, '#2196F3');
+            
+            // Inner rotating ring
+            const time = Date.now() * 0.001;
+            const innerAngle = time * 0.5;
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2 + innerAngle;
+                const x = Math.cos(angle) * 1.5;
+                const y = Math.sin(angle) * 1.5;
+                const p = project3D(x, y, 0);
+                
+                ctx.fillStyle = '#1565C0';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 6 * p.scale, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Glow effect
+                const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 12 * p.scale);
+                gradient.addColorStop(0, 'rgba(33, 150, 243, 0.8)');
+                gradient.addColorStop(1, 'rgba(33, 150, 243, 0)');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 12 * p.scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Draw Patient Bed (End Device)
+            // Bed surface
+            drawBox3D(0, -0.5, 0, 0.8, 0.1, 6, '#757575');
+            
+            // Bed base
+            drawBox3D(0, -1.2, -2, 0.6, 0.4, 1, '#424242');
+            
+            // Support column
+            drawBox3D(0, -1.5, -2, 0.3, 1, 0.3, '#616161');
+            
+            // Add labels
+            const scannerLabel = project3D(0, 2.8, 0);
+            const bedLabel = project3D(0, -0.3, -3);
+            
+            ctx.fillStyle = '#00d4ff';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('CT Scanner', scannerLabel.x, scannerLabel.y);
+            ctx.fillText('Patient Bed', bedLabel.x, bedLabel.y);
+            
+            requestAnimationFrame(animate);
+        }
+        
+        // Mouse controls
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const deltaX = e.clientX - lastMouseX;
+                const deltaY = e.clientY - lastMouseY;
+                
+                rotationY += deltaX * 0.005;
+                rotationX += deltaY * 0.005;
+                
+                // Limit X rotation
+                rotationX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, rotationX));
+                
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+            }
+        });
+        
+        canvas.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+        });
+        
+        // Zoom controls
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomSpeed = 0.1;
+            
+            if (e.deltaY > 0 && zoom > 0.3) {
+                zoom -= zoomSpeed;
+            } else if (e.deltaY < 0 && zoom < 3) {
+                zoom += zoomSpeed;
+            }
+        });
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = Math.min(1200, window.innerWidth - 40);
+            canvas.height = Math.min(800, window.innerHeight - 40);
+        });
+        
+        // Initial resize
+        canvas.width = Math.min(1200, window.innerWidth - 40);
+        canvas.height = Math.min(800, window.innerHeight - 40);
+        
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
